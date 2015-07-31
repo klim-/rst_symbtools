@@ -6,6 +6,7 @@ Created on Wed Oct 22 11:35:00 2014
 """
 
 import unittest
+import sys
 
 import sympy as sp
 from sympy import sin, cos, exp
@@ -15,13 +16,37 @@ import scipy as sc
 import scipy.integrate
 
 import symb_tools as st
+import inspect
 from IPython import embed as IPS
+
+
+if 'all' in sys.argv:
+    FLAG_all = True
+    sys.argv.remove('all')
+else:
+    FLAG_all = False
+
+
+# own decorator for skipping slow tests
+def skip_slow(func):
+    return unittest.skipUnless(FLAG_all, 'skipping slow test')(func)
 
 
 class InteractiveConvenienceTest(unittest.TestCase):
 
     def setUp(self):
         pass
+
+    def test_no_IPS_call(self):
+        srclines = inspect.getsourcelines(st)[0]
+        def filter_func(tup):
+            idx, line = tup
+            return 'IPS()' in line and not line.strip()[0] == '#'
+
+        res = filter(filter_func, enumerate(srclines, 1))
+
+        self.assertEqual(res, [])
+
 
     def test_symbol_atoms(self):
         a, b, t = sp.symbols("a, b, t")
@@ -185,8 +210,7 @@ class SymbToolsTest(unittest.TestCase):
 
         expected_symbol_names = a_str.split() + b_str.split()
 
-        res_list = [sp.Symbol(e)
-                     in res_a1 for e in expected_symbol_names]
+        res_list = [res_a1.has(sp.Symbol(e)) for e in expected_symbol_names]
 
         self.assertTrue( all(res_list) )
 
@@ -311,10 +335,6 @@ class SymbToolsTest(unittest.TestCase):
         expr = a*b**c + 5
         r3 = st.match_symbols_by_name(expr, ['c', 'a5'])
         self.assertEquals(r3, [c, a])
-
-
-
-
 
     def test_symbs_to_func(self):
         a, b, t = sp.symbols("a, b, t")
@@ -586,6 +606,62 @@ class SymbToolsTest(unittest.TestCase):
         self.assertEqual(res1, res1_exp)
         self.assertEqual(res2, res2_exp)
 
+    def test_solve_linear_system1(self):
+        M = sp.randMatrix(3, 8, seed=1131)
+        xx = sp.Matrix(sp.symbols('x1:9'))
+        bb = sp.Matrix(sp.symbols('b1:4'))
+
+        eqns = M*xx + bb
+
+        sol1 = sp.solve(eqns, xx)
+        sol2 = st.solve_linear_system(eqns, xx)
+
+        self.assertEqual(xx.subs(sol1) - xx.subs(sol2), xx*0)
+
+        # symbolic coefficient matrix
+        # this is (currently) not possible with sp.solve
+        # (additionally add a zero line)
+        M2 = st.symbMatrix(4, 8)
+        bb2 = sp.Matrix(sp.symbols('b1:5'))
+        eqns = M2*xx + bb2
+
+        eqns[-1, :] *= 0
+        sol3 = st.solve_linear_system(eqns, xx)
+
+        res = eqns.subs(sol3)
+        res.simplify()
+
+        self.assertEqual(res, res*0)
+
+    def test_solve_linear_system2(self):
+        par = sp.symbols('phi0, phi1, phi2, phidot0, phidot1, phidot2, phiddot0, phiddot1,'
+                         'phiddot2, m0, m1, m2, l0, l1, l2, J0, J1, J2, L1, L2')
+
+        phi0, phi1, phi2, phidot0, phidot1, phidot2, phiddot0, phiddot1, \
+        phiddot2, m0, m1, m2, l0, l1, l2, J0, J1, J2, L1, L2 = par
+
+        k1, k2, k3, k4, k5, k6 = kk = sp.symbols('k1:7')
+
+        eqns = sp.Matrix([[L1*l0*m2*sin(phi1) + k1*(-2*l2*m2*phidot2*(L1*sin(phi1 - phi2) -
+                           l0*sin(phi2))*(J1 + L1**2*m2 + L1*l0*m2*cos(phi1) +
+                           L1*l2*m2*cos(phi1 - phi2) + l0*l1*m1*cos(phi1) + l1**2*m1) -
+                           2*phidot1*(L1*l0*m2*sin(phi1) + L1*l2*m2*sin(phi1 - phi2) +
+                           l0*l1*m1*sin(phi1))*(J2 + L1*l2*m2*cos(phi1 - phi2) + l0*l2*m2*cos(phi2) +
+                           l2**2*m2) - 2*(-L1*l0*m2*phidot1*sin(phi1) - L1*l2*m2*(phidot1 -
+                           phidot2)*sin(phi1 - phi2) - l0*l1*m1*phidot1*sin(phi1))*(J2 + L1*l2*m2*cos(phi1 - phi2) +
+                           l0*l2*m2*cos(phi2) + l2**2*m2)) - k2*(-2*l2*m2*phidot2*(L1*sin(phi1 - phi2) -
+                           l0*sin(phi2))*(J0 + l0**2*m0 + l0*m1*(l0 + l1*cos(phi1)) + l0*m2*(L1*cos(phi1) +
+                           l0 + l2*cos(phi2))) - 2*(-l0*l1*m1*phidot1*sin(phi1) + l0*m2*(-L1*phidot1*sin(phi1) - l2*phidot2*sin(phi2)))*(J2 + L1*l2*m2*cos(phi1 - phi2) + l0*l2*m2*cos(phi2) + l2**2*m2)) + k4*(J1 + L1**2*m2 + L1*l0*m2*cos(phi1) + L1*l2*m2*cos(phi1 - phi2) + l0*l1*m1*cos(phi1) + l1**2*m1) - k5*(J0 + l0**2*m0 + l0*m1*(l0 + l1*cos(phi1)) + l0*m2*(L1*cos(phi1) + l0 + l2*cos(phi2))) + l0*l1*m1*sin(phi1)],
+                          [-2*k1*(-L1*l2*m2*(phidot1 - phidot2)*sin(phi1 - phi2) - l0*l2*m2*phidot2*sin(phi2))*(J2 + L1*l2*m2*cos(phi1 - phi2) + l0*l2*m2*cos(phi2) + l2**2*m2) - k3*(-2*l2*m2*phidot2*(L1*sin(phi1 - phi2) - l0*sin(phi2))*(J0 + l0**2*m0 + l0*m1*(l0 + l1*cos(phi1)) + l0*m2*(L1*cos(phi1) + l0 + l2*cos(phi2))) - 2*(-l0*l1*m1*phidot1*sin(phi1) + l0*m2*(-L1*phidot1*sin(phi1) - l2*phidot2*sin(phi2)))*(J2 + L1*l2*m2*cos(phi1 - phi2) + l0*l2*m2*cos(phi2) + l2**2*m2)) + k4*(J2 + L1*l2*m2*cos(phi1 - phi2) + l0*l2*m2*cos(phi2) + l2**2*m2) - k6*(J0 + l0**2*m0 + l0*m1*(l0 + l1*cos(phi1)) + l0*m2*(L1*cos(phi1) + l0 + l2*cos(phi2))) + l0*l2*m2*sin(phi2)]])
+
+        sol_subs = st.solve_linear_system(eqns, kk)
+
+        res = eqns.subs(sol_subs)
+        res.simplify()
+
+        self.assertEqual(res, res*0)
+        #IPS()
+
 
 class SymbToolsTest2(unittest.TestCase):
 
@@ -600,7 +676,6 @@ class SymbToolsTest2(unittest.TestCase):
         rhs1 = sp.S(0)
         rhs2 = sp.S(2.5)
         rhs3 = x1
-        rhs4 = sin(a*x1)
         rhs5 = x1*(3-t)
         rhs6 = cos(b*t)  # coeff must be nonzero to prevent case distinction
 
@@ -614,24 +689,29 @@ class SymbToolsTest2(unittest.TestCase):
         self.assertEquals(res3.diff(t), rhs3.subs(x1, res3))
         self.assertEquals(res3, iv3*exp(t))
 
-        if 1:
-            # this test works but is slow
-            with st.warnings.catch_warnings(record=True) as cm:
-                res4 = st.solve_scalar_ode_1sto(rhs4, x1, t)
-            self.assertEqual(len(cm), 2)
-            self.assertTrue('multiple solutions' in str(cm[0].message))
-            self.assertTrue('some symbols free' in str(cm[1].message))
-
-            test_difference4 = res4.diff(t) - rhs4.subs(x1, res4)
-            test_difference4_num = st.subs_random_numbers(test_difference4, seed=1403)
-            self.assertAlmostEqual(test_difference4_num, 0)
-
         res5 = st.solve_scalar_ode_1sto(rhs5, x1, t)
         test_difference5 = res5.diff(t) - rhs5.subs(x1, res5)
         self.assertEquals(test_difference5.expand(), 0)
 
         res6 = st.solve_scalar_ode_1sto(rhs6, x1, t)
         self.assertEquals(res6.diff(t), rhs6.subs(x1, res6).expand())
+
+    @skip_slow
+    def test_solve_scalar_ode_1sto_2(self):
+        a, b = sp.symbols("a, b", nonzero=True)
+        t, x1, x2 = sp.symbols("t, x1, x2")
+        rhs4 = sin(a*x1)
+
+        # this test works but is slow
+        with st.warnings.catch_warnings(record=True) as cm:
+            res4 = st.solve_scalar_ode_1sto(rhs4, x1, t)
+
+        self.assertEqual(len(cm), 1)
+        self.assertTrue('multiple solutions' in str(cm[0].message))
+
+        test_difference4 = res4.diff(t) - rhs4.subs(x1, res4)
+
+        self.assertEqual(test_difference4.simplify(), 0)
 
     def test_calc_flow_from_vectorfield(self):
         a, b = sp.symbols("a, b", nonzero=True)
@@ -676,8 +756,10 @@ class SymbToolsTest2(unittest.TestCase):
 
         fxu = (f + G*uu).subs(par_vals)
 
+        # some random initial values
         x0 = st.to_np( sp.randMatrix(len(xx), 1, -10, 10, seed=706) ).squeeze()
 
+        # create the model and the rhs-function
         mod = st.SimulationModel(f, G, xx, par_vals)
         rhs0 = mod.create_simfunction()
 
@@ -691,18 +773,112 @@ class SymbToolsTest2(unittest.TestCase):
         self.assertFalse( np.any(rhs0(x0, 0) - rhs0(x0, 3.7) ) )
 
         # simulate
-
         tt = np.linspace(0, 0.5, 100)  # simulation should be short due to instability
         res1 = sc.integrate.odeint(rhs0, x0, tt)
 
         # proof calculation
         # x(t) = x0*exp(A*t)
         Anum = st.to_np(A.subs(par_vals))
+        Bnum = st.to_np(G.subs(par_vals))
         xt = [ np.dot( sc.linalg.expm(Anum*T), x0 ) for T in tt ]
         xt = np.array(xt)
 
         bin_res1 = np.isclose(res1, xt)  # binary array
         self.assertTrue( np.all(bin_res1) )
+
+        # test handling of parameter free models:
+
+        mod2 = st.SimulationModel(Anum*xx, Bnum, xx)
+        rhs2 = mod2.create_simfunction()
+        res2 = sc.integrate.odeint(rhs2, x0, tt)
+        self.assertTrue(np.allclose(res1, res2))
+
+        # test input functions
+        des_input = st.piece_wise((0, t <= 1 ), (t, t < 2), (0.5, t < 3), (1, True))
+        des_input_func_scalar = st.expr_to_func(t, des_input)
+        des_input_func_vec = st.expr_to_func(t, sp.Matrix([des_input, des_input]) )
+
+        with self.assertRaises(TypeError) as cm:
+            mod2.create_simfunction(input_function=des_input_func_scalar)
+
+        rhs3 = mod2.create_simfunction(input_function=des_input_func_vec)
+        res3_0 = rhs3(x0, 0)
+
+    def test_num_trajectory_compatibility_test(self):
+        x1, x2, x3, x4 = xx = sp.Matrix(sp.symbols("x1, x2, x3, x4"))
+        u1, u2 = uu = sp.Matrix(sp.symbols("u1, u2"))  # inputs
+
+        t = sp.Symbol('t')
+
+        # we want to create a random but stable matrix
+
+        np.random.seed(2805)
+        diag = np.diag( np.random.random(len(xx))*-10 )
+        T = sp.randMatrix(len(xx), len(xx), -10, 10, seed=704)
+        Tinv = T.inv()
+
+        A = Tinv*diag*T
+
+        B = B0 = sp.randMatrix(len(xx), len(uu), -10, 10, seed=705)
+
+        x0 = st.to_np( sp.randMatrix(len(xx), 1, -10, 10, seed=706) ).squeeze()
+        tt = np.linspace(0, 5, 2000)
+
+        des_input = st.piece_wise((2-t, t <= 1 ), (t, t < 2), (2*t-2, t < 3), (4, True))
+        des_input_func_vec = st.expr_to_func(t, sp.Matrix([des_input, des_input]) )
+
+        mod2 = st.SimulationModel(A*xx, B, xx)
+        rhs3 = mod2.create_simfunction(input_function=des_input_func_vec)
+        XX = sc.integrate.odeint(rhs3, x0, tt)
+        UU = des_input_func_vec(tt)
+
+        res1 = mod2.num_trajectory_compatibility_test(tt, XX, UU)
+        self.assertTrue(res1)
+
+        # slightly different input signal -> other results
+        res2 = mod2.num_trajectory_compatibility_test(tt, XX, UU*1.1)
+        self.assertFalse(res2)
+
+    def test_expr_to_func(self):
+
+        x1, x2 = xx = sp.Matrix(sp.symbols("x1, x2"))
+        t, = sp.symbols("t,")
+        r_ = np.r_
+
+        f1 = st.expr_to_func(x1, 2*x1)
+        self.assertEqual(f1(5.1), 10.2)
+
+        XX1 = np.r_[1, 2, 3.7]
+        res1 = f1(XX1) == 2*XX1
+        self.assertTrue(res1.all)
+
+        f2 = st.expr_to_func(x1, sp.Matrix([x1*2, x1+5, 4]))
+        res2 = f2(3) == r_[6, 8, 4]
+        self.assertTrue(res2.all())
+
+        res2b = f2(r_[3, 10, 0]) == np.array([[6, 8, 4], [20, 15, 4], [0, 5, 4]])
+        self.assertTrue(res2b.all())
+
+        f3 = st.expr_to_func(xx, sp.Matrix([x1*2, x2+5, 4]))
+        res3 = f3(-3.1, 4) == r_[-6.2, 9, 4]
+        self.assertTrue(res3.all())
+
+        # test compatibility with Piecewise Expressions
+        des_input = st.piece_wise((0, t <= 1 ), (t, t < 2), (0.5, t < 3), (1, True))
+        f4s = st.expr_to_func(t, des_input)
+        f4v = st.expr_to_func(t, sp.Matrix([des_input, des_input]) )
+
+        self.assertEqual(f4s(2.7), 0.5)
+
+        sol = r_[0, 1.6, 0.5, 1, 1]
+        res4a = f4s(r_[0.3, 1.6, 2.2, 3.1, 500]) == sol
+        self.assertTrue(res4a.all())
+
+        res4b = f4v(r_[0.3, 1.6, 2.2, 3.1, 500])
+        col1, col2 = res4b.T
+        self.assertTrue(np.array_equal(col1, sol))
+        self.assertTrue(np.array_equal(col2, sol))
+
 
     def test_reformulate_Integral(self):
         t = sp.Symbol('t')
@@ -728,6 +904,11 @@ class SymbToolsTest2(unittest.TestCase):
 
         sol2_at_0 = sol2.subs(t, 0).doit()
         self.assertTrue( len(sol2_at_0.atoms(sp.Integral)) == 0)
+
+class SymbToolsTest3(unittest.TestCase):
+
+    def setUp(self):
+        pass
 
     def test_get_symbols_by_name(self):
         c1, C1, x, a, t, Y = sp.symbols('c1, C1, x, a, t, Y')
@@ -778,5 +959,6 @@ class SymbToolsTest2(unittest.TestCase):
 def main():
     unittest.main()
 
+# see also the skip_slow logic at the beginning of the file
 if __name__ == '__main__':
     main()

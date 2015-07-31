@@ -18,6 +18,16 @@ import random
 import itertools as it
 import collections as col
 
+try:
+    # usefull for debugging but not mandatory
+    from IPython import embed as IPS
+    #from ipHelp import IPS
+except ImportError:
+    pass
+
+
+# placeholder to inject a custom simplify function for the enullspace function
+nullspace_simplify_func = None
 
 # convenience
 np.set_printoptions(8, linewidth=300)
@@ -217,7 +227,7 @@ def condition_poly(var, *conditions):
 
 
     # preparations
-    cond_lengths = [len(c)-1 for c in conditions] # -1: first entry is t
+    cond_lengths = [len(c)-1 for c in conditions]  # -1: first entry is t
     condNbr = sum(cond_lengths)
     cn = max(cond_lengths)
 
@@ -250,8 +260,6 @@ def condition_poly(var, *conditions):
     sol_poly = poly.subs(sol)
 
     return sol_poly
-
-
 
 
 def trans_poly(var, cn, left, right):
@@ -309,7 +317,7 @@ def trans_poly(var, cn, left, right):
 
 def make_pw(var, transpoints, fncs):
     transpoints = list(transpoints)
-    upper_borders =  list(zip(*transpoints)[0])
+    upper_borders = list(zip(*transpoints)[0])
 
     var = sp.sympify(var)
 
@@ -354,6 +362,7 @@ def integrate_pw(fnc, var, transpoints):
     pieces = zip(new_fncs, conds)
 
     return piece_wise(*pieces)
+
 
 # might be oboslete (intended use case did not carry on)
 def deriv_2nd_order_chain_rule(funcs1, args1, funcs2, arg2):
@@ -719,7 +728,11 @@ def is_number(expr):
 
     return f == expr and not (f == float('nan') or abs(f) == float('inf'))
 
+    
+def symb_vector(*args, **kwargs):
+    return sp.Matrix(sp.symbols(*args, **kwargs))
 
+    
 # Todo Unittest (sp.Symbol vs. sp.cls)
 def symbMatrix(n, m, s='a', symmetric = 0, cls = sp.Symbol, **kwargs):
     """
@@ -1015,6 +1028,131 @@ def lin_solve_eqns_jac(eqns, vars):
     sol = sp.solve_linear_system(sysmatrix, *vars)
 
     return sol
+
+
+def solve_linear_system(eqns, vars):
+    """
+    Tries to solve symbolic equations of the form
+    A*x + b = 0
+    """
+
+    eqns = sp.Matrix([e for e in eqns if not e == 0])
+    vars = sp.Matrix(vars)
+
+    if len(eqns) == 0:
+        return []  # no restrictions for vars
+
+    assert eqns.shape[1] == 1
+
+    A = eqns.jacobian(vars)
+
+    if atoms(A).intersection(vars):
+        raise ValueError, "The equations seem to be non-linear."
+
+    b = eqns.subs(zip0(vars))
+
+    ns1 = sp.numbered_symbols('aa')
+    ns2 = sp.numbered_symbols('bb')
+
+    replm1, (A_cse, ) = sp.cse(A, ns1)
+    replm2, (b_cse, ) = sp.cse(b, ns2)
+
+    # from IPython import embed as IPS
+
+    if eqns.shape[0] < len(vars):
+        # assuming full rank there are infinitely many solution
+        # we have to find a regular submatrix of A_cse
+        # Heuristics: try the "simplest" combination of columns (w.r.t. _extended_count_ops)
+
+        M, N, idcs1, idcs2 = _simplest_regular_submatrix(A_cse)
+
+        y, z = [], []
+        for i, v in enumerate(vars):
+            if i in idcs1:
+                y.append(v)
+            else:
+                assert i in idcs2
+                z.append(v)
+
+        y, z = sp.Matrix(y), sp.Matrix(z)
+
+        rest = N*z + b_cse
+
+        k = M.shape[0] + 1
+        rr = sp.Matrix(sp.symbols('r1:%i' % k))
+
+        subs_rest = zip(rr, rest)
+
+        EQNs_yz = M*y + rr
+
+    sol = sp.solve(EQNs_yz, y)
+
+    assert isinstance(sol, dict)
+
+    replm1.reverse()
+    replm2.reverse()
+
+    y_sol = y.subs(sol).subs(subs_rest + replm1 + replm2)
+
+    return zip(y, y_sol)
+
+
+def _simplest_regular_submatrix(A):
+    """Background: underdetermined system of linear equations
+    A*x + b = 0
+
+    We want to find a representation
+
+    M*y + N*z + b = 0
+
+    where M is a combination of columns and a regular Matrix.
+    We look for M as simple as possible (w.r.t. _extended_count_ops)
+
+    returns M, N, indices_M, indices_N
+    """
+
+    m, n = A.shape
+    Anum = subs_random_numbers(A, seed=28)
+    if m == n:
+        # quick check for generic rank
+        assert Anum.rank() == n
+        return A
+
+    co = A.applyfunc(_extended_count_ops)
+    col_sums = np.sum(to_np(co), axis=0)
+
+    sum_tuples = zip(col_sums, range(n))
+    # [(sum0, 0), (sum1, 1), ...]
+
+    # combinations of tuples
+    combs = list( it.combinations(sum_tuples, m) )
+
+    # [ ( (sum0, 0), (sum1, 1) ),   ( (sum0, 0), (sum2, 2) ), ...]
+
+    # now we sort this list of m-tuples of 2-tuples
+
+    def comb_sum(comb):
+        # unpack the column sums
+        col_sums = zip(*comb)[0]
+        return sum(col_sums)
+
+    combs.sort(key=comb_sum)
+
+    # now take the first column combination which leads to a regular matrix
+    for comb in combs:
+        idcs = zip(*comb)[1]
+        M = col_select(A, *idcs)
+
+        M_num = subs_random_numbers(M, seed=1107)
+        if M_num.rank() == m:
+            other_idcs = [i for i in range(n) if not i in idcs]
+            N = col_select(A, *other_idcs)
+            return M, N, idcs, other_idcs
+
+    raise ValueError("No regular submatrix has been found")
+
+
+
 
 #def lin_solve_eqns(eqns, vars):
 #    """
@@ -1386,7 +1524,7 @@ def is_left_coprime(Ap, Bp=None, eps = 1e-10):
 
     minors = [col_minor(M, *cols) for cols in combinations]
 
-    nonzero_const_minors = [m for m in minors if (m !=0) and (symb not in m)]
+    nonzero_const_minors = [m for m in minors if (m !=0) and not m.has(symb)]
 
     if len(nonzero_const_minors) > 0:
         return True
@@ -1394,7 +1532,7 @@ def is_left_coprime(Ap, Bp=None, eps = 1e-10):
     #zero_minors = [m for m in minors if m == 0]
 
     # polymionors (rows belong together)
-    all_roots = [roots(m) for m in minors if symb in m]
+    all_roots = [roots(m) for m in minors if m.has(symb)]
 
     # obviously all minors where zeros
     if len(all_roots) == 0:
@@ -1767,7 +1905,7 @@ def trigsimp2(expr):
     # gucken, ob cos auch vorkommt
     for tts in trigterms_sin:
         arg = tts.args[0]
-        if sp.cos(arg) in trigterms_cos:
+        if trigterms_cos.has(sp.cos(arg)):
             trigterm_args.append(arg)
 
 
@@ -1820,19 +1958,18 @@ def trig_term_poly(expr, s):
     return poly
 
 
-def atoms(expr, *args, **kwargs):
-    if isinstance(expr, (sp.Matrix, list)):
-        return matrix_atoms(expr, *args, **kwargs)
-    else:
-        return expr.atoms(*args, **kwargs)
-
-
-
 def matrix_atoms(M, *args, **kwargs):
     sets = [m.atoms(*args, **kwargs) for m in list(M)]
     S = set().union(*sets)
 
     return S
+
+
+def atoms(expr, *args, **kwargs):
+    if isinstance(expr, (sp.Matrix, list)):
+        return matrix_atoms(expr, *args, **kwargs)
+    else:
+        return expr.atoms(*args, **kwargs)
 
 
 def matrix_count_ops(M, visual=False):
@@ -2008,6 +2145,7 @@ def solve_scalar_ode_1sto(sf, func_symb, flow_parameter, **kwargs):
     assert len(new_atoms) in (1, 2)
     CC = new_atoms
 
+    # handling initial conditions (ic)
     res0 = res.subs(flow_parameter, 0)
     eq_ic = iv - res0.rhs
     sol = sp.solve(eq_ic, CC, dict=True)  # gives a list of dicts
@@ -2246,7 +2384,7 @@ def matrix_random_equaltest(M1, M2,  info=False, **kwargs):
 
 
 
-def rnd_number_subs_tuples(expr, seed=None, rational=False):
+def rnd_number_subs_tuples(expr, seed=None, rational=False, prime=False):
     '''
 
     :param expr: expression
@@ -2257,6 +2395,7 @@ def rnd_number_subs_tuples(expr, seed=None, rational=False):
     
     keyword args:
     mul_pi_list: list of atoms, which should be multiplied by pi
+    prime: 
     '''
 
 
@@ -2306,10 +2445,18 @@ def rnd_number_subs_tuples(expr, seed=None, rational=False):
     if not seed is None:
         random.seed(seed)
 
+    if prime:
+        N = len(atoms_list)
+        list_of_primes = prime_list(2*N) # more numbers than needed
+        random.shuffle(list_of_primes)
+        tuples = [(reverse_dict[s], list_of_primes.pop()) for s in atoms_list]
+        return tuples
+
     if rational == True:
         tuples = [(reverse_dict[s], clean_numbers(random.random())) for s in atoms_list]
     else:
         tuples = [(reverse_dict[s], random.random()) for s in atoms_list]
+        
     
 #    # make the desired symbols a multiple of pi 
 #    if mul_pi_list:
@@ -2427,14 +2574,12 @@ def expr_to_func(args, expr, modules = 'numpy', **kwargs):
         the return-value of the resulting function is passed through
         to_np(..) before returning
 
-    eltw_vectorize: allows to handle vectors of piecewise expression
+    eltw_vectorize: allows to handle vectors of piecewise expression (default=True)
 
     """
 
     # TODO: sympy-Matrizen mit Stückweise definierten Polynomen
     # numpy fähig (d.h. vektoriell) auswerten
-
-    # TODO: Unittest
 
     expr = sp.sympify(expr)
     expr = ensure_mutable(expr)
@@ -2456,9 +2601,9 @@ def expr_to_func(args, expr, modules = 'numpy', **kwargs):
 
         new_expr.append(e)
 
-    if not hasattr(expr, '__len__'):
-        assert len(new_expr) == 1
-        new_expr = new_expr[0]
+    # if not hasattr(expr, '__len__'):
+    #     assert len(new_expr) == 1
+    #     new_expr = new_expr[0]
 
     # TODO: Test how this works with np_wrapper and vectorized arguments
     if hasattr(expr, 'shape'):
@@ -2475,17 +2620,7 @@ def expr_to_func(args, expr, modules = 'numpy', **kwargs):
     else:
         func1 = func
 
-    if kwargs.get('special_vectorize', False):
-        # !! this was introduced for a very special application
-        # should be removed from the general code
-        def func2(*allargs):
-            return to_np(func(*allargs))
-
-        f = np.float
-        func3 = np.vectorize(func2, otypes = [f,f,f, f,f,f])
-        return func3
-
-    if kwargs.get('eltw_vectorize', False):
+    if kwargs.get('eltw_vectorize', True):
         # elementwise vectorization to handle piecewise expressions
         # each function returns a 1d-array
         assert len(new_expr) >=1 # elementwise only makes sense for sequences
@@ -2500,7 +2635,10 @@ def expr_to_func(args, expr, modules = 'numpy', **kwargs):
             results = [to_np(f(*allargs)) for f in funcs]
 
             # transpose, such that the input axis (e.g. time) is the first one
-            return to_np(results).T.squeeze()
+            res = to_np(results).T.squeeze()
+            if not hasattr(res, '__len__'):
+                res = float(res)  # scalar results: array(5.0) -> 5.0
+            return res
 
         return func2
 
@@ -2619,7 +2757,7 @@ def get_col_reduced_right(A, symb, T = None, return_internals = False):
     else:
         assert T.shape == (n, m)
         d = T.berkowitz_det().expand()
-        assert d != 0 and not symb in d
+        assert d != 0 and not d.has(symb)
 
 
     A_work = trunc_small_values(sp.expand(A*T))
@@ -2827,6 +2965,7 @@ def pinv(M):
     #print res
     return pinv
 
+
 def nullspaceMatrix(M, *args, **kwargs):
     """
     wrapper for the sympy-nullspace method
@@ -2867,8 +3006,14 @@ def enullspace(M, *args, **kwargs):
     vectors = M.nullspace(*args, **kwargs)
 
     if kwargs.get('simplify', True):
-        vectors = [sp.simplify(v) for v in vectors]
+        custom_simplify = nullspace_simplify_func
+        if custom_simplify is None:
+            custom_simplify = sp.simplify
+        else:
+            assert custom_simplify(sp.cos(1)**2 + sp.sin(1)**2) == 1
 
+        print "simplifying %i vectors" % len(vectors)
+        vectors = [custom_simplify(v) for v in vectors]
 
     new_vectors = []
     for v in vectors:
@@ -2876,7 +3021,7 @@ def enullspace(M, *args, **kwargs):
         denoms = [ c.as_numer_denom()[1] for c in v]
         #denom_tuples = [(d.count_ops(), d) for d in denoms]
         #denom_tuples.sort()
-        denoms.sort(key = _extended_count_ops)
+        denoms.sort( key=_extended_count_ops )
 
         d = denoms[-1]
         # convert to mutable matrix
@@ -2983,9 +3128,15 @@ def depends_on_t(expr, t, dependent_symbols=[]):
     :param expr: the expression to be analysed
     :param t: symbol of independet variable
     :param dependendt_symbols: sequence of implicit time dependent symbols
+                            default: []
+                            if it is set to None this function returns always False
 
     :return: True or False
     """
+
+    # This is usefull for "naively" perform right_shifting, i.e. ignoring any time_dependence
+    if dependent_symbols is None:
+        return False
 
     satoms = atoms(expr, sp.Symbol)
 
@@ -3200,13 +3351,7 @@ def get_symbols_by_name(expr, *names):
 
 
 def match_symbols_by_name(symbols1, symbols2, strict=True):
-    '''
-<<<<<<< HEAD
-    :param symbols1: list of symbols
-    :param symbols2: (might be a sequence of strings as well)
-    :return: a list of symbols which are those objects from symbols1 where
-     the name occurs in symbols2
-=======
+    """
     :param symbols1:
     :param symbols2: (might also be a string or a sequence of strings)
     :param strict: determines whether an error is caused if a symbol is not found
@@ -3215,8 +3360,7 @@ def match_symbols_by_name(symbols1, symbols2, strict=True):
      the name occurs in ´symbols2´
 
      ordering is determined by ´symbols2´
->>>>>>> develop
-    '''
+    """
 
     if isinstance(symbols2, basestring):
         assert " " not in symbols2
@@ -3289,12 +3433,11 @@ def symbolify_matrix(M):
     new_symbol = []
     result = []
 
-
     for e in L:
         if e.is_Atom:
             # leave the entry unchanged
             ns = e
-        elif e in replaced:
+        elif replaced.has(e):
             # get the old symbol
             ns = new_symbol[replaced.index(e)]
         else:
@@ -3331,21 +3474,32 @@ class SimulationModel(object):
         """
         self.f = sp.Matrix(f)
         self.G = sp.Matrix(G)
-        self.mod_param_dict = dict(model_parameters)
+        if model_parameters is None:
+            self.mod_param_dict = {}
+        else:
+            self.mod_param_dict = dict(model_parameters)
+
         assert G.shape[0] == f.shape[0]
         self.state_dim = f.shape[0]
         self.input_dim = G.shape[1]
         self.xx = xx
 
-    def create_simfunction(self, input_function=None):
+    def create_simfunction(self, **kwargs):
         """
         Creates the rhs function of xdot = f(x) + G(x)u
 
-        :param input_function: callable u(x, t)
+        :kwargs:
+
+        :param controller_function: callable u(x, t)
         this can be a controller function,
         a desired trajectory (x beeing ignored -> open loop)
         or a zero-function to simulate the autonomous system xdot = f(x).
         As default a zero-function is used
+
+        :param input_function: callable u(t)
+        shortcut to pass only open-loop control
+
+        Note: input_function and controller_function mutually exclude each other
         """
 
         n = self.state_dim
@@ -3356,29 +3510,40 @@ class SimulationModel(object):
         assert atoms(f, sp.Symbol).issubset( set(self.xx) )
         assert atoms(G, sp.Symbol).issubset( set(self.xx) )
 
-        if not input_function:
+        input_function = kwargs.get('input_function')
+        controller_function = kwargs.get('controller_function')
+
+        if input_function is None and controller_function is None:
             zero_m = np.array([0]*m)
 
             def u_func(xx, t):
                 return zero_m
-
-        else:
+        elif not input_function is None:
             assert hasattr(input_function, '__call__')
-            u_func = input_function
+            assert controller_function is None
+
+            def u_func(xx, t):
+                return input_function(t)
+        else:
+            assert hasattr(controller_function, '__call__')
+            assert input_function is None
+
+            u_func = controller_function
+
+        tmp = u_func([0]*n, 0)
+        tmp = np.atleast_1d(tmp)
+        if not len(tmp) == m:
+            msg = "Invalid result dimension of controller/input_function."
+            raise TypeError(msg)
 
         f_func = expr_to_func(self.xx, f, np_wrapper=True)
-        G_func = expr_to_func(self.xx, G, np_wrapper=True)
-
-        # f_func = sp.lambdify(self.xx, f, modules="numpy")
-        # G_func = sp.lambdify(self.xx, G, modules="numpy")
+        G_func = expr_to_func(self.xx, G, np_wrapper=True, eltw_vectorize=False)
 
         def rhs(xx, t):
             xx = np.ravel(xx)
             uu = np.ravel(u_func(xx, t))
             ff = np.ravel(f_func(*xx))
             GG = G_func(*xx)
-            # from IPython import embed as IPS
-            # IPS()
 
             xx_dot = ff + np.dot(GG, uu)
 
@@ -3386,13 +3551,80 @@ class SimulationModel(object):
 
         return rhs
 
+    def num_trajectory_compatibility_test(self, tt, xx, uu, rtol=0.01, **kwargs):
+        """ This functions accepts 3 arrays (time, state, input) and tests, whether they are
+        compatible with the systems dynamics of self
+
+        :param tt: time array
+        :param xx: state array
+        :param uu: input array
+        :param rtol: relative tolerance w.r.t abs_max of xdot_num
+
+        further kwargs:
+        'full_output': also return the array of residual values
+        """
+
+        assert tt.ndim == 1
+        assert xx.ndim == 2
+        if uu.ndim == 1:
+            uu = uu.reshape(-1, 1)
+        assert xx.shape[0] == uu.shape[0] == len(tt)
+        assert xx.shape[1] == self.state_dim
+        assert uu.shape[1] == self.input_dim
+
+        dt = tt[1] - tt[0]
+        xdot_num = np.diff(xx, axis=0)/dt
+
+        threshold = np.max(np.abs(xdot_num))*rtol * self.state_dim
+
+        f = self.f.subs(self.mod_param_dict)
+        G = self.G.subs(self.mod_param_dict)
+
+        f_func = expr_to_func(self.xx, f, np_wrapper=True)
+        G_func = expr_to_func(self.xx, G, np_wrapper=True, eltw_vectorize=False)
+
+        N = len(tt) - 1
+
+        res = np.zeros(N)
+        eqnerr_arr = np.zeros((N, 2))
+
+        for i in xrange(N):
+            x = xx[i,:]
+            xd = xdot_num[i,:]
+            u = uu[i, :]
+
+            ff = np.ravel(f_func(*x))
+            GG = G_func(*x)
+
+            # calculate the equation error (should be near zero)
+            eqnerr = xd - ff - np.dot(GG, u)
+            assert eqnerr.ndim == 1 and len(eqnerr) == self.state_dim
+
+            res[i] = np.linalg.norm(eqnerr)
+
+        # two conditions must be fulfilled:
+        # 1.: less than 10% of the residum values are "medium big"
+        medium_residua_bool = res > threshold*0.1  # boolean array
+        nbr_medium_residua = sum(medium_residua_bool)
+        cond1 = nbr_medium_residua < N*0.1
+
+        # 2.: less than 1% of the residum values are "big"
+        big_residua_bool = res > threshold  # boolean array
+        nbr_big_residua = sum(big_residua_bool)
+        cond2 = nbr_big_residua < N*0.01
+
+        cond_res = cond1 and cond2
+
+        if kwargs.get('full_output'):
+            return cond_res, res
+        else:
+            return cond_res
 
 
 # eigene Trigsimp-Versuche
 # mit der aktuellen sympy-Version (2013-03-29)
 # eigentlich überflüssig
 # TODO: in Schnipsel-Archiv überführen
-
 def sort_trig_terms(expr):
 
     expr = expr.expand()
@@ -3460,6 +3692,49 @@ def my_trig_simp(expr):
     subslist.reverse()
 
     return expr.subs(subslist), subslist
+    
+def gen_primes():
+    """ Generate an infinite sequence of prime numbers.
+    """
+# Source:
+# http://stackoverflow.com/questions/1628949/to-find-first-n-prime-numbers-in-python    
+
+    # Maps composites to primes witnessing their compositeness.
+    # This is memory efficient, as the sieve is not "run forward"
+    # indefinitely, but only as long as required by the current
+    # number being tested.
+    #
+    D = {}  
+
+    # The running integer that's checked for primeness
+    q = 2  
+
+    while True:
+        if q not in D:
+            # q is a new prime.
+            # Yield it and mark its first multiple that isn't
+            # already marked in previous iterations
+            # 
+            yield q        
+            D[q * q] = [q]
+        else:
+            # q is composite. D[q] is the list of primes that
+            # divide it. Since we've reached q, we no longer
+            # need it in the map, but we'll mark the next 
+            # multiples of its witnesses to prepare for larger
+            # numbers
+            # 
+            for p in D[q]:
+                D.setdefault(p + q, []).append(p)
+            del D[q]
+
+        q += 1
+
+        
+def prime_list(n):
+    a = gen_primes()
+    res = [a.next() for i in xrange(n)]
+    return res
 
 
 
